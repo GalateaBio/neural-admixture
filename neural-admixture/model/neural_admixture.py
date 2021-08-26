@@ -53,7 +53,9 @@ class NeuralAdmixture(nn.Module):
                         device, batch_size=0, valX=None, display_logs=True,
                         save_every=10, save_path='../outputs/model.pt',
                         trY=None, valY=None, seed=42, shuffle=False, log_to_wandb=False,
-                        tol=1e-5):
+                        tol=1e-5, tr_mask=None, val_mask=None):
+        if batch_size > trX.shape[0] or batch_size <= 0:
+            batch_size = trX.shape[0]
         random.seed(seed)
         loss_f_supervised, trY_num, valY_num = None, None, None
         tr_losses, val_losses = [], []
@@ -68,7 +70,9 @@ class NeuralAdmixture(nn.Module):
             valY_num = to_idx_mapper(valY[:])
             loss_f_supervised = nn.CrossEntropyLoss(reduction='mean')
         for ep in range(num_epochs):
-            tr_loss, val_loss = self._run_epoch(trX, optimizer, loss_f, batch_size, valX, device, shuffle, loss_f_supervised, trY_num, valY_num)
+            tr_loss, val_loss = self._run_epoch(trX, optimizer, loss_f, batch_size,
+                                                valX, device, shuffle, loss_f_supervised,
+                                                trY_num, valY_num, tr_mask, val_mask)
             tr_losses.append(tr_loss)
             val_losses.append(val_loss)
             assert not math.isnan(tr_loss), 'Training loss is NaN'
@@ -93,57 +97,73 @@ class NeuralAdmixture(nn.Module):
     def _get_encoder_norm(self):
         return torch.norm(list(self.common_encoder.parameters())[0])
 
-    def _run_step(self, X, optimizer, loss_f, loss_f_supervised=None, y=None):
+    def _run_step(self, X, optimizer, loss_f, loss_f_supervised=None, y=None, mask=None):
         optimizer.zero_grad()
         recs, hid_states = self(X)
         loss = sum((loss_f(rec, X) for rec in recs)) if self.linear else loss_f(recs, X)
-        if loss_f_supervised is not None:  # Currently only implemented for single-head architecture!
-            loss += sum((loss_f_supervised(h, y) for h in hid_states))
+        del recs, hid_states
+        if mask is not None:
+            loss = (loss*mask.float()).sum()
+            loss = loss/mask.sum()
+        else:
+            loss = loss.mean()
         if self.lambda_l2 > 1e-6:
             loss += self.lambda_l2*self._get_encoder_norm()**2
-        del recs, hid_states
+        if loss_f_supervised is not None:  # Currently only implemented for single-head architecture!
+            loss += sum((loss_f_supervised(h, y) for h in hid_states))
         loss.backward()
         optimizer.step()
         if self.linear:
             self.decoders.decoders.apply(self.clipper)
         return loss.item()
     
-    def _validate(self, valX, loss_f, batch_size, device, loss_f_supervised=None, y=None):
-        acum_val_loss = 0
+    def _validate(self, valX, loss_f, batch_size, device, loss_f_supervised=None, y=None, mask=None):
         with torch.no_grad():
-            for X, y_b in self._batch_generator(valX, batch_size, y=y if loss_f_supervised is not None else None):
+            acum_val_loss = torch.zeros(valX.size())
+            for X, y_b, _ in self._batch_generator(valX, batch_size, y=y if loss_f_supervised is not None else None, mask=None):
                 X = X.to(device)
                 y_b = y_b.to(device) if y_b is not None else None
                 recs, hid_states = self(X)
-                acum_val_loss += sum((loss_f(rec, X).item() for rec in recs)) if self.linear else loss_f(recs, X).item()
+                acum_val_loss += sum((loss_f(rec, X) for rec in recs)) if self.linear else loss_f(recs, X)
                 if loss_f_supervised is not None:
-                    acum_val_loss += sum((loss_f_supervised(h, y_b).item() for h in hid_states))
+                    acum_val_loss += sum((loss_f_supervised(h, y_b) for h in hid_states))
+            if mask is not None:
+                mask.to(device)
+                acum_val_loss = (acum_val_loss*mask)/mask.sum()
+            else:
+                acum_val_loss = acum_val_loss.mean()
             if self.lambda_l2 > 1e-6:
                 acum_val_loss += self.lambda_l2*self._get_encoder_norm()**2
         return acum_val_loss
 
-    def _batch_generator(self, X, batch_size=0, shuffle=False, y=None):
+    def _batch_generator(self, X, batch_size=0, shuffle=False, y=None, mask=None):
         idxs = [i for i in range(X.shape[0])]
         if shuffle:
             random.shuffle(idxs)
         if batch_size < 1:
-            yield torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.int64) if y is not None else None
+            yield torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.int64) if y is not None else None, torch.tensor(mask, dtype=torch.int8) if mask is not None else None
         else:
             for i in range(0, X.shape[0], batch_size):
-                yield torch.tensor(X[sorted(idxs[i:i+batch_size])], dtype=torch.float32), torch.tensor(y[sorted(idxs[i:i+batch_size])], dtype=torch.int64) if y is not None else None
+                yield torch.tensor(X[sorted(idxs[i:i+batch_size])], dtype=torch.float32), torch.tensor(y[sorted(idxs[i:i+batch_size])], dtype=torch.int64) if y is not None else None, torch.tensor(mask[sorted(idxs[i:i+batch_size])], dtype=torch.int8)
 
     def _run_epoch(self, trX, optimizer, loss_f, batch_size, valX,
                    device, shuffle=False, loss_f_supervised=None,
-                   trY=None, valY=None):
+                   trY=None, valY=None, tr_mask=None, val_mask=None):
         tr_loss, val_loss = 0, None
         self.train()
-        for X, y in self._batch_generator(trX, batch_size, shuffle=shuffle, y=trY if loss_f_supervised is not None else None):
-            step_loss = self._run_step(X.to(device), optimizer, loss_f, loss_f_supervised, y.to(device) if y is not None else None)
+        for X, y, mask in self._batch_generator(trX, batch_size,
+                                          shuffle=shuffle,
+                                          y=trY if loss_f_supervised is not None else None,
+                                          mask=tr_mask):
+            step_loss = self._run_step(X.to(device), optimizer,
+                                      loss_f, loss_f_supervised,
+                                      y.to(device) if y is not None else None,
+                                      mask.to(device) if mask is not None else None)
             tr_loss += step_loss
         if valX is not None:
             self.eval()
-            val_loss = self._validate(valX, loss_f, batch_size, device, loss_f_supervised, valY)
-            return tr_loss / trX.shape[0], val_loss / valX.shape[0]
+            val_loss = self._validate(valX, loss_f, batch_size, device, loss_f_supervised, valY, val_mask)
+            return tr_loss / (trX.shape[0]/batch_size), val_loss
         return tr_loss / trX.shape[0], None
 
     @staticmethod

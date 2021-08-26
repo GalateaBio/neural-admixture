@@ -1,3 +1,4 @@
+import gc
 import logging
 import sys
 import torch
@@ -13,7 +14,7 @@ from src import utils
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-def fit_model(trX, args, valX=None, trY=None, valY=None):
+def fit_model(trX, args, valX=None, trY=None, valY=None, tr_missing=None, val_missing=None):
     switchers = Switchers.get_switchers()
     num_max_epochs = args.max_epochs
     batch_size = args.batch_size
@@ -60,10 +61,15 @@ def fit_model(trX, args, valX=None, trY=None, valY=None):
         init_file = f'{run_name}.pkl'
     init_path = f'{save_dir}/{init_file}'
     if linear:
-        P_init = switchers['initializations'][decoder_init](trX, trY, Ks, batch_size, seed, init_path, run_name, n_components)
+        initX = trX.copy()
+        if sum(tr_missing):
+            initX[tr_missing] = 0
+        P_init = switchers['initializations'][decoder_init](initX, trY, Ks, batch_size, seed, init_path, run_name, n_components)
     else:
         P_init = None
         log.info('Non-linear decoder weights will be randomly initialized.')
+    del initX
+    gc.collect()
     activation = switchers['activations'][activation_str](0)
     log.info('Variants: {}'.format(trX.shape[1]))
     model = NeuralAdmixture(Ks, trX.shape[1], P_init=P_init,
@@ -82,7 +88,7 @@ def fit_model(trX, args, valX=None, trY=None, valY=None):
     optimizer = switchers['optimizers'][optimizer_str](filter(lambda p: p.requires_grad, model.parameters()), learning_rate)
     log.info('Optimizer successfully loaded.')
 
-    loss_f = nn.BCELoss(reduction='mean')
+    loss_f = nn.BCELoss(reduction='none')
     log.info('Going to train {} head{}: {}.'.format(len(Ks), 's' if len(Ks) > 1 else '', f'K={Ks[0]}' if len(Ks) == 1 else f'K={Ks[0]} to K={Ks[-1]}'))
     # Fitting
     log.info('Fitting...')
@@ -91,7 +97,8 @@ def fit_model(trX, args, valX=None, trY=None, valY=None):
     actual_num_epochs = model.launch_training(trX, optimizer, loss_f, num_max_epochs, device, valX=valX,
                        batch_size=batch_size, display_logs=display_logs, save_every=save_every,
                        save_path=save_path, trY=trY, valY=valY, shuffle=shuffle,
-                       seed=seed, log_to_wandb=log_to_wandb, tol=tol)
+                       seed=seed, log_to_wandb=log_to_wandb, tol=tol,
+                       tr_mask=1-tr_missing if sum(tr_missing) else None, val_mask=1-val_missing if sum(val_missing) else None)
     elapsed_time = t.stop()
     if log_to_wandb:
         wandb.run.summary['total_elapsed_time'] = elapsed_time
@@ -111,8 +118,8 @@ def main():
         tr_file, val_file = args.data_path, args.validation_data_path
         tr_pops_f, val_pops_f = args.populations_path, args.validation_populations_path
 
-    trX, trY, valX, valY = utils.read_data(tr_file, val_file, tr_pops_f, val_pops_f)
-    model, device = fit_model(trX, args, valX, trY, valY)
+    trX, trY, valX, valY, tr_missing, val_missing = utils.read_data(tr_file, val_file, tr_pops_f, val_pops_f)
+    model, device = fit_model(trX, args, valX, trY, valY, tr_missing, val_missing)
     log.info('Computing divergences...')
     model.display_divergences()
     log.info('Writing outputs...')

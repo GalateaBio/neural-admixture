@@ -142,7 +142,14 @@ def read_data(tr_file, val_file=None, tr_pops_f=None, val_pops_f=None):
     if val_snps is not None:
         log.info(f'Validation data contains {val_snps.shape[0]} samples and {val_snps.shape[1]} SNPs.')
     log.info('Data loaded.')
-    return tr_snps, tr_pops, val_snps, val_pops
+    # Missing data handling
+    tr_missing = np.isin(tr_snps, [0, 0.5, 1], invert=True)
+    log.info(f'Approximately {round(100*sum(tr_missing)/tr_snps.size, 3)}% of data is missing.')
+    val_missing = None
+    if val_snps is not None:
+        val_missing = np.isin(val_snps, [0, 0.5, 1], invert=True)
+        log.info(f'Approximately {round(100*sum(val_missing)/val_snps.size, 3)}% of validation data is missing.')
+    return tr_snps, tr_pops, val_snps, val_pops, tr_missing, val_missing
 
 def validate_data(tr_snps, tr_pops, val_snps, val_pops):
     assert not (val_snps is None and val_pops is not None), 'Populations were specified for validation data, but no SNPs were specified.'
