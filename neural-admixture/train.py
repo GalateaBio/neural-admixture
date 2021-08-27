@@ -1,5 +1,6 @@
 import gc
 import logging
+import numpy as np
 import sys
 import torch
 import torch.nn as nn
@@ -61,14 +62,13 @@ def fit_model(trX, args, valX=None, trY=None, valY=None, tr_missing=None, val_mi
         init_file = f'{run_name}.pkl'
     init_path = f'{save_dir}/{init_file}'
     if linear:
-        initX = trX.copy()
-        if sum(tr_missing):
-            initX[tr_missing] = 0
-        P_init = switchers['initializations'][decoder_init](initX, trY, Ks, batch_size, seed, init_path, run_name, n_components)
+        if np.sum(tr_missing):
+            trX[tr_missing] = 0
+            log.info('Missing data filled with 0.')
+        P_init = switchers['initializations'][decoder_init](trX, trY, Ks, batch_size, seed, init_path, run_name, n_components)
     else:
         P_init = None
         log.info('Non-linear decoder weights will be randomly initialized.')
-    del initX
     gc.collect()
     activation = switchers['activations'][activation_str](0)
     log.info('Variants: {}'.format(trX.shape[1]))
@@ -98,7 +98,7 @@ def fit_model(trX, args, valX=None, trY=None, valY=None, tr_missing=None, val_mi
                        batch_size=batch_size, display_logs=display_logs, save_every=save_every,
                        save_path=save_path, trY=trY, valY=valY, shuffle=shuffle,
                        seed=seed, log_to_wandb=log_to_wandb, tol=tol,
-                       tr_mask=1-tr_missing if sum(tr_missing) else None, val_mask=1-val_missing if sum(val_missing) else None)
+                       tr_mask=1-tr_missing if np.sum(tr_missing) else None, val_mask=1-val_missing if np.sum(val_missing) else None)
     elapsed_time = t.stop()
     if log_to_wandb:
         wandb.run.summary['total_elapsed_time'] = elapsed_time

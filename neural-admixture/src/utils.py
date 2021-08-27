@@ -47,7 +47,6 @@ def parse_args(train=True):
         parser.add_argument('--pca_path', required=False, type=str, help='Path containing PCA object, used for plots')
         parser.add_argument('--pca_components', required=False, type=int, default=2, help='Number of components to use for the PCKMeans initialization')
         parser.add_argument('--tol', required=False, type=float, default=1e-6, help='Convergence criterion: will stop when difference in objective function between two iterations is smaller than this.')
-
     else:
         parser.add_argument('--out_name', required=True, type=str, help='Name used to output files on inference mode.')
     parser.add_argument('--save_dir', required=True, type=str, help='{} this directory'.format('Save model in' if train else 'Load model from'))
@@ -144,11 +143,11 @@ def read_data(tr_file, val_file=None, tr_pops_f=None, val_pops_f=None):
     log.info('Data loaded.')
     # Missing data handling
     tr_missing = np.isin(tr_snps, [0, 0.5, 1], invert=True)
-    log.info(f'Approximately {round(100*sum(tr_missing)/tr_snps.size, 3)}% of data is missing.')
+    log.info(f'Approximately {round(100*np.sum(tr_missing)/tr_snps.size, 3)}% of data is missing.')
     val_missing = None
     if val_snps is not None:
         val_missing = np.isin(val_snps, [0, 0.5, 1], invert=True)
-        log.info(f'Approximately {round(100*sum(val_missing)/val_snps.size, 3)}% of validation data is missing.')
+        log.info(f'Approximately {round(100*np.sum(val_missing)/val_snps.size, 3)}% of validation data is missing.')
     return tr_snps, tr_pops, val_snps, val_pops, tr_missing, val_missing
 
 def validate_data(tr_snps, tr_pops, val_snps, val_pops):
@@ -166,7 +165,7 @@ def get_model_predictions(model, data, bsize, device):
     outs = [torch.tensor([]) for _ in range(len(model.ks))]
     model.eval()
     with torch.no_grad():
-        for i, (X, _) in enumerate(model._batch_generator(data, bsize, shuffle=False)):
+        for i, (X, _, _) in enumerate(model._batch_generator(data, bsize, shuffle=False)):
             X = X.to(device)
             out = model(X, True)
             for j in range(len(model.ks)):

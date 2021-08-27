@@ -119,7 +119,7 @@ class NeuralAdmixture(nn.Module):
     
     def _validate(self, valX, loss_f, batch_size, device, loss_f_supervised=None, y=None, mask=None):
         with torch.no_grad():
-            acum_val_loss = torch.zeros(valX.size())
+            acum_val_loss = torch.zeros(valX.shape).to(device)
             for X, y_b, _ in self._batch_generator(valX, batch_size, y=y if loss_f_supervised is not None else None, mask=None):
                 X = X.to(device)
                 y_b = y_b.to(device) if y_b is not None else None
@@ -128,8 +128,9 @@ class NeuralAdmixture(nn.Module):
                 if loss_f_supervised is not None:
                     acum_val_loss += sum((loss_f_supervised(h, y_b) for h in hid_states))
             if mask is not None:
-                mask.to(device)
-                acum_val_loss = (acum_val_loss*mask)/mask.sum()
+                mask_t = torch.Tensor(mask).to(device)
+                acum_val_loss = (acum_val_loss*mask_t.float()).sum()
+                acum_val_loss = acum_val_loss/mask_t.sum()
             else:
                 acum_val_loss = acum_val_loss.mean()
             if self.lambda_l2 > 1e-6:
@@ -144,7 +145,7 @@ class NeuralAdmixture(nn.Module):
             yield torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.int64) if y is not None else None, torch.tensor(mask, dtype=torch.int8) if mask is not None else None
         else:
             for i in range(0, X.shape[0], batch_size):
-                yield torch.tensor(X[sorted(idxs[i:i+batch_size])], dtype=torch.float32), torch.tensor(y[sorted(idxs[i:i+batch_size])], dtype=torch.int64) if y is not None else None, torch.tensor(mask[sorted(idxs[i:i+batch_size])], dtype=torch.int8)
+                yield torch.tensor(X[sorted(idxs[i:i+batch_size])], dtype=torch.float32), torch.tensor(y[sorted(idxs[i:i+batch_size])], dtype=torch.int64) if y is not None else None, torch.tensor(mask[sorted(idxs[i:i+batch_size])], dtype=torch.int8) if mask is not None else None
 
     def _run_epoch(self, trX, optimizer, loss_f, batch_size, valX,
                    device, shuffle=False, loss_f_supervised=None,
